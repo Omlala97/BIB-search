@@ -1,0 +1,210 @@
+#include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+#include "util.h"
+
+
+EXEC SQL INCLUDE SQLCA; 
+
+EXEC SQL BEGIN DECLARE SECTION;
+	char input[23];						// input author name
+	char name[23];						// author name
+
+	char type[12];						// what publication
+	
+	char title[71];						// pub title
+	char pubid[11];
+	
+	char publisher[51];					// book publisher
+	sqlint32 year;						// proceedings, journal, book
+	sqlint32 volume;					// journal
+	sqlint32 number;					// journal
+	
+	char appearsin[11];					// article
+	sqlint32 startpage;
+	sqlint32 endpage;
+EXEC SQL END DECLARE SECTION;
+
+
+void print_authors () {
+	EXEC SQL DECLARE C2 CURSOR FOR
+        select trim(a.name)
+        from author a, wrote w
+        where a.aid = w.aid and
+              w.pubid = :pubid
+        order by w.aorder;
+    EXEC SQL OPEN C2;
+
+    EXEC SQL FETCH C2 INTO :name;
+    printf("Authors: %s", name);
+    for( ; ; ) {
+        EXEC SQL FETCH C2 INTO :name;
+        if (SQLCODE == 100) break;
+        else if (SQLCODE < 0) break;
+        printf(", %s", name);
+    }
+    printf("\n");
+    EXEC SQL CLOSE C2;
+}
+
+void print_books () {
+    EXEC SQL
+        select distinct b.publisher, b.year INTO :publisher, :year
+        from book b
+        where b.pubid = :pubid;
+    print_authors();
+    printf("Publisher: %s\n", publisher);
+    printf("Year: %d\n", year);
+}
+
+void print_journals () {
+    EXEC SQL
+        select j.volume, j.number, j.year INTO :volume, :number, :year
+        from journal j
+        where j.pubid = :pubid;
+    printf("Volume: %d\n", volume);
+    printf("Number: %d\n", number);
+    printf("Year: %d\n", year);
+}
+
+void print_proceedings () {
+    EXEC SQL
+        select p.year INTO :year
+        from proceedings p
+        where p.pubid = :pubid;
+    printf("Year: %d\n", year);
+}
+
+void print_articles () {
+    EXEC SQL
+        select a.appearsin, a.startpage, a.endpage INTO :appearsin, :startpage, :endpage
+        from article a
+        where a.pubid = :pubid;
+    print_authors();
+    printf("In: %s\n", appearsin);
+    printf("Pages: %d--%d\n", startpage, endpage);
+}
+
+void print_publications () {
+    EXEC SQL
+        select p.title INTO :title
+        from publication p
+        where p.pubid = :pubid;   
+    printf("Pubid: %s\n", pubid);
+    printf("Type: %s\n", type);
+    printf("Title: %s\n", title);
+    if (strcmp(type, "proceedings") == 0) print_proceedings();
+    else if (strcmp(type, "journal") == 0) print_journals();
+    else if (strcmp(type, "book") == 0) print_books();
+    else print_articles();
+    printf("\n");
+}
+
+void print_pubids () {
+    EXEC SQL DECLARE C1 CURSOR FOR
+        with
+        get_author_pubid (name, pubid, title) as 
+        (
+            select distinct a.name, w.pubid, p.title
+            from author a, wrote w, publication p
+            where a.name = :input and
+                a.aid = w.aid and
+                w.pubid = p.pubid
+        ),
+        get_books (pubid, type, name, year) as
+        (
+            select distinct b.pubid, 'book' as type, a.name, b.year
+            from book b, author a, wrote w, get_author_pubid gap 
+            where gap.pubid = b.pubid and
+                gap.pubid = w.pubid and
+                w.aid = a.aid and
+                w.aorder = 1
+        ),
+        get_appearsins (pubid, appearsin, name) as
+        (
+            select distinct ac.pubid, ac.appearsin, a.name
+            from article ac, author a, wrote w, get_author_pubid gap
+            where gap.pubid = ac.pubid and
+                gap.pubid = w.pubid and
+                w.aid = a.aid and
+                w.aorder = 1
+        ),
+        get_proceedings (pubid, type, name, year) as
+        (
+            select distinct pro.pubid, 'proceedings' as type, '' as name, pro.year
+            from proceedings pro, get_appearsins ga
+            where ga.appearsin = pro.pubid
+        ),
+        get_journals (pubid, type, name, year) as
+        (
+            select distinct j.pubid, 'journal' as type, '' as name, j.year
+            from journal j, get_appearsins ga 
+            where ga.appearsin = j.pubid
+        ),
+        get_articles_from_proceedings (pubid, type, name, year) as
+        (
+            select distinct ga.pubid, 'article' as type, ga.name, pro.year
+            from proceedings pro, get_appearsins ga
+            where ga.appearsin = pro.pubid
+        ),
+        get_articles_from_journal (pubid, type, name, year) as
+        (
+            select distinct ga.pubid, 'article' as type, ga.name, j.year
+            from journal j, get_appearsins ga
+            where ga.appearsin = j.pubid
+        )
+        select gb.pubid, gb.type, gb.name, gb.year
+        from get_books gb
+        union
+        select gp.pubid, gp.type, gp.name, gp.year
+        from get_proceedings gp
+        union
+        select gj.pubid, gj.type, gj.name, gj.year
+        from get_journals gj
+        union 
+        select gaj.pubid, gaj.type, gaj.name, gaj.year
+        from get_articles_from_journal gaj
+        union
+        select gap.pubid, gap.type, gap.name, gap.year
+        from get_articles_from_proceedings gap
+        order by year desc, name asc;
+
+    EXEC SQL OPEN C1;
+
+    for( ; ; ){
+        EXEC SQL FETCH C1 INTO :pubid, :type;
+        //printf("pubid is: %s", pubid);
+        //printf("type is: %s", type);
+        if (SQLCODE == 100) break;
+        else if (SQLCODE < 0) break;
+        print_publications();
+    }
+
+    EXEC SQL CLOSE C1;
+}
+
+int main(int argc, char *argv[]) {
+   char * getpass();
+
+   EXEC SQL BEGIN DECLARE SECTION;
+      char db[6] = "cs348";
+   EXEC SQL END DECLARE SECTION;
+   EXEC SQL WHENEVER SQLERROR  GO TO error;
+   EXEC SQL CONNECT TO :db;
+
+   strcpy(input, argv[1]);
+   //printf("Input: %s", argv[1]);
+   print_pubids();
+
+   EXEC SQL COMMIT;
+   EXEC SQL CONNECT reset;
+   exit(0);
+error:
+   check_error("Error",&sqlca);
+   EXEC SQL WHENEVER SQLERROR CONTINUE;
+
+   EXEC SQL ROLLBACK;
+   EXEC SQL CONNECT reset;
+   exit(1);
+}

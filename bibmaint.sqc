@@ -1,0 +1,205 @@
+#include<stdio.h>               
+#include<stdlib.h> 
+#include<stdbool.h>
+#include<string.h>
+
+EXEC SQL INCLUDE SQLCA; 
+
+EXEC SQL BEGIN DECLARE SECTION;
+    sqlint32 aid;
+    char name[23];
+    char url[43];
+
+    char pubid[11];
+    sqlint32 aorder;
+
+    char title[71];
+    char publisher[51];
+
+    sqlint32 year;
+    sqlint32 volume;
+    sqlint32 number;
+
+    char appearsin[11];
+    sqlint32 startpage;
+    sqlint32 endpage;
+    sqlint32 flag;
+EXEC SQL END DECLARE SECTION;
+
+void check_existence () {
+    EXEC SQL
+        select count(*) INTO :flag
+        from publication 
+        where pubid = :pubid;
+    
+    char *token;
+    token = strtok(NULL, "#");
+    strcpy(pubid, token);
+    token = strtok(NULL, "#");
+    strcpy(title, token);
+
+    if (flag) {
+        EXEC SQL 
+            update publication
+            set title = :title
+            where pubid = :pubid;
+    } else {
+        EXEC SQL
+            insert into
+            publication values (:pubid, :title);
+    }
+    printf("Pubid: %s\n", pubid);
+}
+
+void print_proceedings () {
+    check_existence();
+    year = atoi(strtok(NULL, ")"));
+    printf("Type: proceedings\n");
+    printf("Title: %s\n", title);
+    printf("Year: %d\n", year);
+    if (flag) EXEC SQL update proceedings set year = :year where pubid = :pubid;
+    else EXEC SQL insert into proceedings values (:pubid, :year);
+    printf("\n");
+}
+
+void print_journal () {
+    check_existence();
+    volume = atoi(strtok(NULL, "#"));
+	number = atoi(strtok(NULL, "#"));
+	year = atoi(strtok(NULL, ")"));
+    printf("Type: journal\n");
+    printf("Title: %s\n", title);
+	printf("Volume: %d\nNumber: %d\nYear: %d\n", volume, number, year);
+    if (flag) {
+        EXEC SQL 
+            update journal 
+            set volume = :volume, number = :number, year = :year 
+            where pubid = :pubid;
+    } else {
+        EXEC SQL insert into journal values (:pubid, :volume, :number, :year);
+    }
+	printf("\n");
+}
+
+void print_authors (char *aID) {
+    EXEC SQL
+        delete from wrote
+        where pubid = :pubid;
+    printf("Authors: ");
+    aID = strtok(aID, ";");
+    for (aorder = 1; ; aorder++) {
+        aid = atoi(aID);
+        EXEC SQL
+            insert into wrote values (:aid, :pubid, :aorder);
+        EXEC SQL
+            select trim(name) INTO :name from author where aid = :aid;
+        printf("%s", name);
+        aID = strtok(NULL, ";");
+        if (!aID) break;
+        printf(", ");
+    }
+    printf("\n");
+}
+
+void print_book () {
+    check_existence();
+    char *aID = strtok(NULL, "#");          // list of author IDs
+    char *temp = strtok(NULL, "#");
+	strcpy(publisher, temp);
+    year = atoi(strtok(NULL, ")"));
+    printf("Type: book\n");
+    printf("Title: %s\n", title);
+    print_authors(aID);
+    printf("Publisher: %s\n", publisher);
+    printf("Year: %d\n", year);
+    // update publisher and year here, authors in print_authors
+    if (flag) EXEC SQL update book set publisher = :publisher, year = :year where pubid = :pubid;
+    else EXEC SQL insert into book values (:pubid, :publisher, :year);
+	printf("\n");
+}
+
+void print_article () {
+    check_existence();
+    char *aID = strtok(NULL, "#");
+    char *temp = strtok(NULL, "#");
+	strcpy(appearsin, temp);
+    startpage = atoi(strtok(NULL, "#"));
+    endpage = atoi(strtok(NULL, ")"));
+    printf("Type: article\n");
+    printf("Title: %s\n", title);
+    print_authors(aID);
+    printf("In: %s\nPages: %d--%d\n", appearsin, startpage, endpage);
+    if (flag) {
+        EXEC SQL
+            update article
+            set appearsin = :appearsin, startpage = :startpage, endpage = :endpage
+            where pubid = :pubid;
+    } else {
+        EXEC SQL 
+			insert into article
+			values (:pubid, :appearsin, :startpage, :endpage);
+    }
+	printf("\n");
+}
+
+void update_authors () {
+    aid = atoi(strtok(NULL, "#"));
+    char *temp = strtok(NULL, ")");
+	strcpy(name, temp);
+    EXEC SQL
+        select count(*) INTO :flag
+        from author
+        where aid = :aid;
+    if (flag) EXEC SQL update author set name = :name where aid = :aid;
+    else EXEC SQL insert into author(aid, name) values (:aid, :name);
+}
+
+void update_author_urls () {
+    aid = atoi(strtok(NULL, "#"));
+    char *temp = strtok(NULL, ")");
+	strcpy(url, temp);
+    EXEC SQL
+        update author 
+		set url = :url 
+		where aid = :aid;
+}
+
+void print_all () {
+    size_t len = 0;
+	char *args = NULL;
+	char *token = NULL;
+
+	while(getline(&args, &len, stdin)){
+		if (feof(stdin)) break;
+		token = strtok(args,"(");
+		if (strcmp(token,"author") == 0) update_authors();
+		if (strcmp(token,"authorurl") == 0) update_author_urls();
+		if (strcmp(token,"book") == 0) print_book();
+		if (strcmp(token,"journal") == 0) print_journal();
+		if (strcmp(token,"proceedings") == 0) print_proceedings();
+		if (strcmp(token,"article") == 0) print_article();
+	}
+	free(args);
+}
+
+int main(){
+	char * getpass();
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        char db[6] = "cs348";
+    EXEC SQL END DECLARE SECTION;
+    EXEC SQL WHENEVER SQLERROR  GO TO error;
+    EXEC SQL CONNECT TO :db;
+    print_all();
+	EXEC SQL COMMIT;
+	EXEC SQL CONNECT reset;
+
+	exit(0);
+error:
+	check_error("Error",&sqlca);
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+
+	EXEC SQL ROLLBACK;
+	EXEC SQL CONNECT reset;
+	exit(1);
+}
